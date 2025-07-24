@@ -7,3 +7,7 @@ vim_bindings = false
 
 # Tab size (number of spaces for tab key)
 tab_size = 4
+
+# Directory where daily notes are stored
+# Default: ~/Documents/DailyNotes
+daily_notes_dir = "~/river/notes"

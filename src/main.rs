@@ -10,6 +10,9 @@ use crossterm::{
 };
 use std::io::{self, Write};
 use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::fs;
+use chrono::Local;
 
 mod config;
 use config::Config;
@@ -26,6 +29,7 @@ struct Editor {
     cursor_x: usize,
     cursor_y: usize,
     offset_y: usize,
+    offset_x: usize,
     terminal_height: u16,
     terminal_width: u16,
     dirty: bool,
@@ -52,6 +56,7 @@ impl Editor {
             cursor_x: 0,
             cursor_y: 0,
             offset_y: 0,
+            offset_x: 0,
             terminal_height: height,
             terminal_width: width,
             dirty: false,
@@ -637,6 +642,33 @@ impl Editor {
         let line = &mut self.buffer[self.cursor_y];
         line.insert(self.cursor_x, c);
         self.cursor_x += 1;
+        
+        // Auto line wrap when reaching terminal width (with some margin)
+        let wrap_width = (self.terminal_width - 5) as usize; // Leave some margin
+        if self.cursor_x >= wrap_width && c != ' ' {
+            // Find last space to break at word boundary
+            let mut break_pos = self.cursor_x;
+            for i in (0..self.cursor_x).rev() {
+                if line[i] == ' ' {
+                    break_pos = i + 1;
+                    break;
+                }
+            }
+            
+            // If no space found or space is too far back, just break at current position
+            if break_pos == self.cursor_x || self.cursor_x - break_pos > 20 {
+                break_pos = self.cursor_x;
+            }
+            
+            // Move text after break position to new line
+            let new_line: Vec<char> = line.drain(break_pos..).collect();
+            self.buffer.insert(self.cursor_y + 1, new_line);
+            
+            // Update cursor position
+            self.cursor_y += 1;
+            self.cursor_x = self.cursor_x - break_pos;
+        }
+        
         self.dirty = true;
     }
 
@@ -688,10 +720,19 @@ impl Editor {
     fn update_offset(&mut self) {
         let visible_height = (self.terminal_height - 2) as usize;
         
+        // Vertical scrolling
         if self.cursor_y < self.offset_y {
             self.offset_y = self.cursor_y;
         } else if self.cursor_y >= self.offset_y + visible_height {
             self.offset_y = self.cursor_y - visible_height + 1;
+        }
+        
+        // Horizontal scrolling
+        let visible_width = self.terminal_width as usize;
+        if self.cursor_x < self.offset_x {
+            self.offset_x = self.cursor_x;
+        } else if self.cursor_x >= self.offset_x + visible_width {
+            self.offset_x = self.cursor_x - visible_width + 1;
         }
     }
 
@@ -714,8 +755,14 @@ impl Editor {
             let file_y = y + self.offset_y;
             if file_y < self.buffer.len() {
                 let line = &self.buffer[file_y];
-                let line_str: String = line.iter().take(self.terminal_width as usize).collect();
-                execute!(stdout, Print(&line_str))?;
+                // Apply horizontal scrolling
+                let visible_start = self.offset_x;
+                let visible_end = (visible_start + self.terminal_width as usize).min(line.len());
+                
+                if visible_start < line.len() {
+                    let line_str: String = line[visible_start..visible_end].iter().collect();
+                    execute!(stdout, Print(&line_str))?;
+                }
             } else {
                 execute!(stdout, SetForegroundColor(Color::DarkGrey))?;
                 execute!(stdout, Print("~"))?;
@@ -726,9 +773,10 @@ impl Editor {
         self.render_status_bar()?;
 
         let screen_y = self.cursor_y - self.offset_y;
+        let screen_x = self.cursor_x - self.offset_x;
         execute!(
             stdout,
-            MoveTo(self.cursor_x as u16, screen_y as u16),
+            MoveTo(screen_x as u16, screen_y as u16),
             Show
         )?;
 
@@ -818,11 +866,42 @@ impl Editor {
         }
         
         self.filename = Some(filename.to_string());
-        self.cursor_x = 0;
-        self.cursor_y = 0;
+        
+        // Position cursor at end of file
+        self.cursor_y = self.buffer.len() - 1;
+        self.cursor_x = self.buffer[self.cursor_y].len();
+        
+        // If the last line has content, add a new line and position cursor there
+        if !self.buffer[self.cursor_y].is_empty() {
+            self.buffer.push(Vec::new());
+            self.cursor_y += 1;
+            self.cursor_x = 0;
+        }
+        
         self.dirty = true;
         Ok(())
     }
+}
+
+fn get_daily_note_path(config: &Config) -> io::Result<PathBuf> {
+    let today = Local::now();
+    let date_str = today.format("%Y-%m-%d").to_string();
+    let filename = format!("{}.md", date_str);
+    
+    let notes_dir = Path::new(&config.daily_notes_dir);
+    
+    // Create directory if it doesn't exist
+    if !notes_dir.exists() {
+        fs::create_dir_all(&notes_dir)?;
+    }
+    
+    Ok(notes_dir.join(filename))
+}
+
+fn create_daily_note_content() -> String {
+    let today = Local::now();
+    let date_str = today.format("%A, %B %d, %Y").to_string();
+    format!("# {}\n\n", date_str)
 }
 
 fn main() -> io::Result<()> {
@@ -830,7 +909,19 @@ fn main() -> io::Result<()> {
     let mut editor = Editor::new()?;
     
     if args.len() > 1 {
+        // If a file is specified, open it
         editor.load_file(&args[1])?;
+    } else {
+        // Otherwise, open today's daily note
+        let daily_note_path = get_daily_note_path(&editor.config)?;
+        
+        if !daily_note_path.exists() {
+            // Create new daily note with date header
+            let content = create_daily_note_content();
+            fs::write(&daily_note_path, &content)?;
+        }
+        
+        editor.load_file(&daily_note_path.to_string_lossy())?;
     }
     
     editor.run()

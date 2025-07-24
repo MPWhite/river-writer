@@ -9,6 +9,9 @@ pub struct Config {
     
     #[serde(default = "default_tab_size")]
     pub tab_size: usize,
+    
+    #[serde(default = "default_daily_notes_dir")]
+    pub daily_notes_dir: String,
 }
 
 fn default_vim_bindings() -> bool {
@@ -19,11 +22,20 @@ fn default_tab_size() -> usize {
     4
 }
 
+fn default_daily_notes_dir() -> String {
+    if let Some(home) = dirs::home_dir() {
+        home.join("Documents/DailyNotes").to_string_lossy().to_string()
+    } else {
+        "./DailyNotes".to_string()
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
             vim_bindings: default_vim_bindings(),
             tab_size: default_tab_size(),
+            daily_notes_dir: default_daily_notes_dir(),
         }
     }
 }
@@ -33,10 +45,19 @@ impl Config {
         let config_path = Self::config_path();
         
         if let Ok(contents) = fs::read_to_string(&config_path) {
-            toml::from_str(&contents).unwrap_or_else(|e| {
+            let mut config: Config = toml::from_str(&contents).unwrap_or_else(|e| {
                 eprintln!("Error parsing config file: {}", e);
                 Self::default()
-            })
+            });
+            
+            // Expand tilde in daily_notes_dir
+            if config.daily_notes_dir.starts_with("~") {
+                if let Some(home) = dirs::home_dir() {
+                    config.daily_notes_dir = config.daily_notes_dir.replacen("~", &home.to_string_lossy(), 1);
+                }
+            }
+            
+            config
         } else {
             // Create default config file if it doesn't exist
             let default_config = Self::default();
