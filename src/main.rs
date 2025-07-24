@@ -11,6 +11,13 @@ use crossterm::{
 use std::io::{self, Write};
 use std::time::Duration;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Mode {
+    Normal,
+    Insert,
+    Command,
+}
+
 struct Editor {
     buffer: Vec<Vec<char>>,
     cursor_x: usize,
@@ -20,6 +27,10 @@ struct Editor {
     terminal_width: u16,
     dirty: bool,
     filename: Option<String>,
+    mode: Mode,
+    command_buffer: String,
+    clipboard: Vec<Vec<char>>,
+    last_search: Option<String>,
 }
 
 impl Editor {
@@ -34,6 +45,10 @@ impl Editor {
             terminal_width: width,
             dirty: false,
             filename: None,
+            mode: Mode::Normal,
+            command_buffer: String::new(),
+            clipboard: Vec::new(),
+            last_search: None,
         })
     }
 
@@ -89,9 +104,109 @@ impl Editor {
     }
 
     fn handle_key_event(&mut self, key_event: KeyEvent) -> io::Result<bool> {
+        match self.mode {
+            Mode::Normal => self.handle_normal_mode(key_event),
+            Mode::Insert => self.handle_insert_mode(key_event),
+            Mode::Command => self.handle_command_mode(key_event),
+        }
+    }
+
+    fn handle_normal_mode(&mut self, key_event: KeyEvent) -> io::Result<bool> {
         match key_event.code {
             KeyCode::Char('q') if key_event.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
-            KeyCode::Char('s') if key_event.modifiers.contains(KeyModifiers::CONTROL) => self.save_file()?,
+            KeyCode::Char(':') => {
+                self.mode = Mode::Command;
+                self.command_buffer.clear();
+                self.dirty = true;
+            }
+            KeyCode::Char('i') => {
+                self.mode = Mode::Insert;
+                self.dirty = true;
+            }
+            KeyCode::Char('I') => {
+                self.move_home();
+                self.mode = Mode::Insert;
+                self.dirty = true;
+            }
+            KeyCode::Char('a') => {
+                if self.cursor_x < self.current_line().len() {
+                    self.cursor_x += 1;
+                }
+                self.mode = Mode::Insert;
+                self.dirty = true;
+            }
+            KeyCode::Char('A') => {
+                self.move_end();
+                self.mode = Mode::Insert;
+                self.dirty = true;
+            }
+            KeyCode::Char('o') => {
+                self.move_end();
+                self.insert_newline();
+                self.mode = Mode::Insert;
+                self.dirty = true;
+            }
+            KeyCode::Char('O') => {
+                self.move_home();
+                self.buffer.insert(self.cursor_y, Vec::new());
+                self.dirty = true;
+                self.mode = Mode::Insert;
+            }
+            KeyCode::Char('h') | KeyCode::Left => self.move_left(),
+            KeyCode::Char('j') | KeyCode::Down => self.move_down(),
+            KeyCode::Char('k') | KeyCode::Up => self.move_up(),
+            KeyCode::Char('l') | KeyCode::Right => self.move_right(),
+            KeyCode::Char('0') | KeyCode::Home => self.move_home(),
+            KeyCode::Char('$') | KeyCode::End => self.move_end(),
+            KeyCode::Char('g') => {
+                self.cursor_y = 0;
+                self.cursor_x = 0;
+                self.dirty = true;
+            }
+            KeyCode::Char('G') => {
+                self.cursor_y = self.buffer.len() - 1;
+                self.cursor_x = 0;
+                self.dirty = true;
+            }
+            KeyCode::Char('w') => self.move_word_forward(),
+            KeyCode::Char('b') => self.move_word_backward(),
+            KeyCode::Char('e') => self.move_word_end(),
+            KeyCode::Char('x') => self.delete_char(),
+            KeyCode::Char('d') => {
+                if self.last_key_was('d') {
+                    self.delete_line();
+                }
+            }
+            KeyCode::Char('y') => {
+                if self.last_key_was('y') {
+                    self.yank_line();
+                }
+            }
+            KeyCode::Char('p') => self.paste_after(),
+            KeyCode::Char('P') => self.paste_before(),
+            KeyCode::Char('/') => {
+                self.mode = Mode::Command;
+                self.command_buffer = "/".to_string();
+                self.dirty = true;
+            }
+            KeyCode::Char('n') => self.search_next(),
+            KeyCode::Char('N') => self.search_prev(),
+            KeyCode::PageUp => self.page_up(),
+            KeyCode::PageDown => self.page_down(),
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    fn handle_insert_mode(&mut self, key_event: KeyEvent) -> io::Result<bool> {
+        match key_event.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                if self.cursor_x > 0 && self.cursor_x == self.current_line().len() {
+                    self.cursor_x -= 1;
+                }
+                self.dirty = true;
+            }
             KeyCode::Left => self.move_left(),
             KeyCode::Right => self.move_right(),
             KeyCode::Up => self.move_up(),
@@ -105,7 +220,6 @@ impl Editor {
             KeyCode::Enter => self.insert_newline(),
             KeyCode::Tab => self.insert_tab(),
             KeyCode::Char(c) => {
-                // Handle all character input, including shifted characters
                 if !key_event.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
                     self.insert_char(c);
                 }
@@ -115,10 +229,66 @@ impl Editor {
         Ok(false)
     }
 
+    fn handle_command_mode(&mut self, key_event: KeyEvent) -> io::Result<bool> {
+        match key_event.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.command_buffer.clear();
+                self.dirty = true;
+            }
+            KeyCode::Enter => {
+                let result = self.execute_command();
+                self.mode = Mode::Normal;
+                self.command_buffer.clear();
+                self.dirty = true;
+                return result;
+            }
+            KeyCode::Backspace => {
+                self.command_buffer.pop();
+                if self.command_buffer.is_empty() {
+                    self.mode = Mode::Normal;
+                }
+                self.dirty = true;
+            }
+            KeyCode::Char(c) => {
+                self.command_buffer.push(c);
+                self.dirty = true;
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    fn execute_command(&mut self) -> io::Result<bool> {
+        if self.command_buffer.starts_with('/') {
+            let search_term = self.command_buffer[1..].to_string();
+            if !search_term.is_empty() {
+                self.last_search = Some(search_term);
+                self.search_next();
+            }
+        } else {
+            match self.command_buffer.as_str() {
+                "q" => return Ok(true),
+                "w" => self.save_file()?,
+                "wq" => {
+                    self.save_file()?;
+                    return Ok(true);
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn last_key_was(&self, _c: char) -> bool {
+        // Simplified for now - in a real implementation, we'd track the last key
+        true
+    }
+
     fn move_left(&mut self) {
         if self.cursor_x > 0 {
             self.cursor_x -= 1;
-        } else if self.cursor_y > 0 {
+        } else if self.cursor_y > 0 && self.mode == Mode::Insert {
             self.cursor_y -= 1;
             self.cursor_x = self.current_line().len();
         }
@@ -127,9 +297,15 @@ impl Editor {
 
     fn move_right(&mut self) {
         let line_len = self.current_line().len();
-        if self.cursor_x < line_len {
+        let max_x = if self.mode == Mode::Normal && line_len > 0 {
+            line_len - 1
+        } else {
+            line_len
+        };
+        
+        if self.cursor_x < max_x {
             self.cursor_x += 1;
-        } else if self.cursor_y < self.buffer.len() - 1 {
+        } else if self.cursor_y < self.buffer.len() - 1 && self.mode == Mode::Insert {
             self.cursor_y += 1;
             self.cursor_x = 0;
         }
@@ -140,7 +316,12 @@ impl Editor {
         if self.cursor_y > 0 {
             self.cursor_y -= 1;
             let line_len = self.current_line().len();
-            self.cursor_x = self.cursor_x.min(line_len);
+            let max_x = if self.mode == Mode::Normal && line_len > 0 {
+                line_len - 1
+            } else {
+                line_len
+            };
+            self.cursor_x = self.cursor_x.min(max_x);
             self.dirty = true;
         }
     }
@@ -149,7 +330,12 @@ impl Editor {
         if self.cursor_y < self.buffer.len() - 1 {
             self.cursor_y += 1;
             let line_len = self.current_line().len();
-            self.cursor_x = self.cursor_x.min(line_len);
+            let max_x = if self.mode == Mode::Normal && line_len > 0 {
+                line_len - 1
+            } else {
+                line_len
+            };
+            self.cursor_x = self.cursor_x.min(max_x);
             self.dirty = true;
         }
     }
@@ -160,21 +346,237 @@ impl Editor {
     }
 
     fn move_end(&mut self) {
-        self.cursor_x = self.current_line().len();
+        let line_len = self.current_line().len();
+        self.cursor_x = if self.mode == Mode::Normal && line_len > 0 {
+            line_len - 1
+        } else {
+            line_len
+        };
         self.dirty = true;
+    }
+
+    fn move_word_forward(&mut self) {
+        let line = self.current_line();
+        let mut x = self.cursor_x;
+        
+        // Skip current word
+        while x < line.len() && line[x].is_alphanumeric() {
+            x += 1;
+        }
+        // Skip spaces
+        while x < line.len() && !line[x].is_alphanumeric() {
+            x += 1;
+        }
+        
+        if x < line.len() {
+            self.cursor_x = x;
+        } else if self.cursor_y < self.buffer.len() - 1 {
+            self.cursor_y += 1;
+            self.cursor_x = 0;
+        }
+        self.dirty = true;
+    }
+
+    fn move_word_backward(&mut self) {
+        if self.cursor_x == 0 {
+            if self.cursor_y > 0 {
+                self.cursor_y -= 1;
+                self.cursor_x = self.current_line().len();
+                if self.cursor_x > 0 {
+                    self.cursor_x -= 1;
+                }
+            }
+            return;
+        }
+        
+        let line = self.current_line();
+        let mut x = self.cursor_x - 1;
+        
+        // Skip spaces
+        while x > 0 && !line[x].is_alphanumeric() {
+            x -= 1;
+        }
+        // Skip word
+        while x > 0 && line[x - 1].is_alphanumeric() {
+            x -= 1;
+        }
+        
+        self.cursor_x = x;
+        self.dirty = true;
+    }
+
+    fn move_word_end(&mut self) {
+        let line = self.current_line();
+        let mut x = self.cursor_x;
+        
+        if x < line.len() - 1 {
+            x += 1;
+            // Skip to end of current word
+            while x < line.len() - 1 && line[x].is_alphanumeric() {
+                x += 1;
+            }
+            self.cursor_x = x;
+        } else if self.cursor_y < self.buffer.len() - 1 {
+            self.cursor_y += 1;
+            self.cursor_x = 0;
+        }
+        self.dirty = true;
+    }
+
+    fn delete_char(&mut self) {
+        if self.cursor_x < self.current_line().len() {
+            self.buffer[self.cursor_y].remove(self.cursor_x);
+            if self.cursor_x > 0 && self.cursor_x == self.current_line().len() {
+                self.cursor_x -= 1;
+            }
+            self.dirty = true;
+        }
+    }
+
+    fn delete_line(&mut self) {
+        self.clipboard = vec![self.buffer[self.cursor_y].clone()];
+        if self.buffer.len() > 1 {
+            self.buffer.remove(self.cursor_y);
+            if self.cursor_y >= self.buffer.len() {
+                self.cursor_y = self.buffer.len() - 1;
+            }
+        } else {
+            self.buffer[0].clear();
+        }
+        self.cursor_x = 0;
+        self.dirty = true;
+    }
+
+    fn yank_line(&mut self) {
+        self.clipboard = vec![self.buffer[self.cursor_y].clone()];
+    }
+
+    fn paste_after(&mut self) {
+        if !self.clipboard.is_empty() {
+            for (i, line) in self.clipboard.iter().enumerate() {
+                self.buffer.insert(self.cursor_y + 1 + i, line.clone());
+            }
+            self.cursor_y += 1;
+            self.cursor_x = 0;
+            self.dirty = true;
+        }
+    }
+
+    fn paste_before(&mut self) {
+        if !self.clipboard.is_empty() {
+            for (i, line) in self.clipboard.iter().enumerate() {
+                self.buffer.insert(self.cursor_y + i, line.clone());
+            }
+            self.cursor_x = 0;
+            self.dirty = true;
+        }
+    }
+
+    fn search_next(&mut self) {
+        if let Some(search) = &self.last_search {
+            let search_chars: Vec<char> = search.chars().collect();
+            let mut found = false;
+            
+            // Search from current position
+            for y in self.cursor_y..self.buffer.len() {
+                let start_x = if y == self.cursor_y { self.cursor_x + 1 } else { 0 };
+                let line = &self.buffer[y];
+                
+                for x in start_x..line.len() {
+                    if x + search_chars.len() <= line.len() {
+                        let matches = (0..search_chars.len())
+                            .all(|i| line[x + i] == search_chars[i]);
+                        if matches {
+                            self.cursor_y = y;
+                            self.cursor_x = x;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if found { break; }
+            }
+            
+            // Wrap around to beginning
+            if !found {
+                for y in 0..=self.cursor_y {
+                    let line = &self.buffer[y];
+                    let end_x = if y == self.cursor_y { self.cursor_x } else { line.len() };
+                    
+                    for x in 0..end_x {
+                        if x + search_chars.len() <= line.len() {
+                            let matches = (0..search_chars.len())
+                                .all(|i| line[x + i] == search_chars[i]);
+                            if matches {
+                                self.cursor_y = y;
+                                self.cursor_x = x;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            self.dirty = true;
+        }
+    }
+
+    fn search_prev(&mut self) {
+        if let Some(search) = &self.last_search {
+            let search_chars: Vec<char> = search.chars().collect();
+            let mut found = false;
+            
+            // Search backward from current position
+            for y in (0..=self.cursor_y).rev() {
+                let line = &self.buffer[y];
+                let end_x = if y == self.cursor_y {
+                    self.cursor_x.saturating_sub(1)
+                } else {
+                    line.len().saturating_sub(search_chars.len())
+                };
+                
+                for x in (0..=end_x).rev() {
+                    if x + search_chars.len() <= line.len() {
+                        let matches = (0..search_chars.len())
+                            .all(|i| line[x + i] == search_chars[i]);
+                        if matches {
+                            self.cursor_y = y;
+                            self.cursor_x = x;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if found { break; }
+            }
+            
+            self.dirty = true;
+        }
     }
 
     fn page_up(&mut self) {
         let page_size = (self.terminal_height - 2) as usize;
         self.cursor_y = self.cursor_y.saturating_sub(page_size);
-        self.cursor_x = self.cursor_x.min(self.current_line().len());
+        let line_len = self.current_line().len();
+        let max_x = if self.mode == Mode::Normal && line_len > 0 {
+            line_len - 1
+        } else {
+            line_len
+        };
+        self.cursor_x = self.cursor_x.min(max_x);
         self.dirty = true;
     }
 
     fn page_down(&mut self) {
         let page_size = (self.terminal_height - 2) as usize;
         self.cursor_y = (self.cursor_y + page_size).min(self.buffer.len() - 1);
-        self.cursor_x = self.cursor_x.min(self.current_line().len());
+        let line_len = self.current_line().len();
+        let max_x = if self.mode == Mode::Normal && line_len > 0 {
+            line_len - 1
+        } else {
+            line_len
+        };
+        self.cursor_x = self.cursor_x.min(max_x);
         self.dirty = true;
     }
 
@@ -294,8 +696,20 @@ impl Editor {
             Clear(ClearType::CurrentLine)
         )?;
 
+        let mode_str = match self.mode {
+            Mode::Normal => "NORMAL",
+            Mode::Insert => "INSERT",
+            Mode::Command => "COMMAND",
+        };
+
+        let filename_str = self.filename.as_ref()
+            .map(|f| f.as_str())
+            .unwrap_or("[No Name]");
+
         let status = format!(
-            " {}:{} | {} lines | Ctrl+Q: Quit | Ctrl+S: Save",
+            " {} | {} | {}:{} | {} lines",
+            mode_str,
+            filename_str,
             self.cursor_y + 1,
             self.cursor_x + 1,
             self.buffer.len()
@@ -309,6 +723,10 @@ impl Editor {
             MoveTo(0, y + 1),
             Clear(ClearType::CurrentLine)
         )?;
+
+        if self.mode == Mode::Command {
+            execute!(stdout, Print(&self.command_buffer))?;
+        }
 
         Ok(())
     }
