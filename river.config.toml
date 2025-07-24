@@ -11,3 +11,7 @@ tab_size = 4
 # Directory where daily notes are stored
 # Default: ~/Documents/DailyNotes
 daily_notes_dir = "~/river/notes"
+
+# Typing timeout in seconds (how long before typing session ends)
+# Default: 180 (3 minutes)
+typing_timeout_seconds = 180

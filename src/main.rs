@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use std::path::{Path, PathBuf};
 use std::fs;
 use chrono::Local;
+use serde::{Deserialize, Serialize};
 
 mod config;
 use config::Config;
@@ -22,6 +23,21 @@ enum Mode {
     Normal,
     Insert,
     Command,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DailyStats {
+    #[serde(default)]
+    typing_seconds: u64,
+    // Future stats can be added here
+}
+
+impl Default for DailyStats {
+    fn default() -> Self {
+        DailyStats {
+            typing_seconds: 0,
+        }
+    }
 }
 
 struct Editor {
@@ -96,7 +112,7 @@ impl Editor {
             
             // Update accumulated typing time if actively typing
             if let Some(session_start) = self.typing_session_start {
-                let typing_timeout = Duration::from_secs(5);
+                let typing_timeout = Duration::from_secs(self.config.typing_timeout_seconds);
                 if self.last_typing_activity.elapsed() <= typing_timeout {
                     self.accumulated_typing_time = self.accumulated_typing_time + 
                         self.last_typing_activity.duration_since(session_start);
@@ -816,34 +832,37 @@ impl Editor {
         word_count
     }
     
-    fn get_typing_time_file_path(config: &Config) -> PathBuf {
+    fn get_stats_file_path(config: &Config) -> PathBuf {
         let today = Local::now();
         let date_str = today.format("%Y-%m-%d").to_string();
-        let filename = format!(".typing-time-{}.txt", date_str);
+        let filename = format!(".stats-{}.toml", date_str);
         Path::new(&config.daily_notes_dir).join(filename)
     }
     
     fn load_typing_time(config: &Config) -> io::Result<Duration> {
-        let path = Self::get_typing_time_file_path(config);
+        let path = Self::get_stats_file_path(config);
         if path.exists() {
             let contents = fs::read_to_string(&path)?;
-            if let Ok(secs) = contents.trim().parse::<u64>() {
-                return Ok(Duration::from_secs(secs));
+            if let Ok(stats) = toml::from_str::<DailyStats>(&contents) {
+                return Ok(Duration::from_secs(stats.typing_seconds));
             }
         }
         Ok(Duration::from_secs(0))
     }
     
     fn save_typing_time(&self) -> io::Result<()> {
-        let path = Self::get_typing_time_file_path(&self.config);
-        let total_secs = self.get_total_typing_time().as_secs();
-        fs::write(&path, total_secs.to_string())?;
+        let path = Self::get_stats_file_path(&self.config);
+        let stats = DailyStats {
+            typing_seconds: self.get_total_typing_time().as_secs(),
+        };
+        let toml_str = toml::to_string(&stats).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        fs::write(&path, toml_str)?;
         Ok(())
     }
     
     fn track_typing(&mut self) {
         let now = Instant::now();
-        let typing_timeout = Duration::from_secs(5); // Consider typing stopped after 5 seconds of inactivity
+        let typing_timeout = Duration::from_secs(self.config.typing_timeout_seconds);
         
         // If this is the first typing activity or we've been inactive
         if self.typing_session_start.is_none() || now.duration_since(self.last_typing_activity) > typing_timeout {
@@ -858,7 +877,7 @@ impl Editor {
         
         // Add current session time if actively typing
         if let Some(session_start) = self.typing_session_start {
-            let typing_timeout = Duration::from_secs(5);
+            let typing_timeout = Duration::from_secs(self.config.typing_timeout_seconds);
             if self.last_typing_activity.elapsed() <= typing_timeout {
                 total += self.last_typing_activity.duration_since(session_start);
             }

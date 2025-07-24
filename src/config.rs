@@ -12,6 +12,9 @@ pub struct Config {
     
     #[serde(default = "default_daily_notes_dir")]
     pub daily_notes_dir: String,
+    
+    #[serde(default = "default_typing_timeout_seconds")]
+    pub typing_timeout_seconds: u64,
 }
 
 fn default_vim_bindings() -> bool {
@@ -30,12 +33,17 @@ fn default_daily_notes_dir() -> String {
     }
 }
 
+fn default_typing_timeout_seconds() -> u64 {
+    180 // 3 minutes
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
             vim_bindings: default_vim_bindings(),
             tab_size: default_tab_size(),
             daily_notes_dir: default_daily_notes_dir(),
+            typing_timeout_seconds: default_typing_timeout_seconds(),
         }
     }
 }

@@ -27,4 +27,5 @@ river file.txt     # Opens specific file
 ```toml
 vim_bindings = false
 daily_notes_dir = "~/Documents/DailyNotes"
+typing_timeout_seconds = 180  # 3 minutes
 ```
