@@ -41,6 +41,9 @@ struct Editor {
     config: Config,
     needs_save: bool,
     last_save: Instant,
+    typing_session_start: Option<Instant>,
+    accumulated_typing_time: Duration,
+    last_typing_activity: Instant,
 }
 
 impl Editor {
@@ -52,6 +55,8 @@ impl Editor {
         } else {
             Mode::Insert
         };
+        
+        let accumulated_time = Self::load_typing_time(&config)?;
         
         Ok(Editor {
             buffer: vec![Vec::new()],
@@ -70,11 +75,16 @@ impl Editor {
             config,
             needs_save: false,
             last_save: Instant::now(),
+            typing_session_start: None,
+            accumulated_typing_time: accumulated_time,
+            last_typing_activity: Instant::now(),
         })
     }
 
     fn run(&mut self) -> io::Result<()> {
         self.enter_raw_mode()?;
+        
+        let mut last_typing_save = Instant::now();
         
         loop {
             self.render()?;
@@ -82,6 +92,25 @@ impl Editor {
             // Auto-save logic: save after 1 second of inactivity
             if self.needs_save && self.last_save.elapsed() > Duration::from_secs(1) {
                 self.auto_save()?;
+            }
+            
+            // Update accumulated typing time if actively typing
+            if let Some(session_start) = self.typing_session_start {
+                let typing_timeout = Duration::from_secs(5);
+                if self.last_typing_activity.elapsed() <= typing_timeout {
+                    self.accumulated_typing_time = self.accumulated_typing_time + 
+                        self.last_typing_activity.duration_since(session_start);
+                    self.typing_session_start = Some(self.last_typing_activity);
+                } else {
+                    // Session ended, clear it
+                    self.typing_session_start = None;
+                }
+            }
+            
+            // Save typing time every 10 seconds
+            if last_typing_save.elapsed() > Duration::from_secs(10) {
+                let _ = self.save_typing_time();
+                last_typing_save = Instant::now();
             }
             
             if event::poll(Duration::from_millis(16))? {
@@ -105,6 +134,7 @@ impl Editor {
         if self.needs_save {
             self.auto_save()?;
         }
+        let _ = self.save_typing_time();
         
         self.leave_raw_mode()?;
         Ok(())
@@ -493,6 +523,8 @@ impl Editor {
     }
 
     fn delete_char(&mut self) {
+        self.track_typing(); // Track typing activity
+        
         if self.cursor_x < self.current_line().len() {
             self.buffer[self.cursor_y].remove(self.cursor_x);
             if self.cursor_x > 0 && self.cursor_x == self.current_line().len() && self.config.vim_bindings {
@@ -505,6 +537,8 @@ impl Editor {
     }
 
     fn delete_line(&mut self) {
+        self.track_typing(); // Track typing activity
+        
         self.clipboard = vec![self.buffer[self.cursor_y].clone()];
         if self.buffer.len() > 1 {
             self.buffer.remove(self.cursor_y);
@@ -526,6 +560,8 @@ impl Editor {
 
     fn paste_after(&mut self) {
         if !self.clipboard.is_empty() {
+            self.track_typing(); // Track typing activity
+            
             for (i, line) in self.clipboard.iter().enumerate() {
                 self.buffer.insert(self.cursor_y + 1 + i, line.clone());
             }
@@ -539,6 +575,8 @@ impl Editor {
 
     fn paste_before(&mut self) {
         if !self.clipboard.is_empty() {
+            self.track_typing(); // Track typing activity
+            
             for (i, line) in self.clipboard.iter().enumerate() {
                 self.buffer.insert(self.cursor_y + i, line.clone());
             }
@@ -658,6 +696,9 @@ impl Editor {
     }
 
     fn insert_char(&mut self, c: char) {
+        // Track typing activity
+        self.track_typing();
+        
         let line = &mut self.buffer[self.cursor_y];
         line.insert(self.cursor_x, c);
         self.cursor_x += 1;
@@ -700,6 +741,8 @@ impl Editor {
     }
 
     fn insert_newline(&mut self) {
+        self.track_typing(); // Track typing activity
+        
         let current_line = &mut self.buffer[self.cursor_y];
         let new_line: Vec<char> = current_line.drain(self.cursor_x..).collect();
         self.buffer.insert(self.cursor_y + 1, new_line);
@@ -711,6 +754,8 @@ impl Editor {
     }
 
     fn backspace(&mut self) {
+        self.track_typing(); // Track typing activity
+        
         if self.cursor_x > 0 {
             self.buffer[self.cursor_y].remove(self.cursor_x - 1);
             self.cursor_x -= 1;
@@ -729,6 +774,8 @@ impl Editor {
     }
 
     fn delete(&mut self) {
+        self.track_typing(); // Track typing activity
+        
         let line_len = self.current_line().len();
         if self.cursor_x < line_len {
             self.buffer[self.cursor_y].remove(self.cursor_x);
@@ -767,6 +814,57 @@ impl Editor {
         }
         
         word_count
+    }
+    
+    fn get_typing_time_file_path(config: &Config) -> PathBuf {
+        let today = Local::now();
+        let date_str = today.format("%Y-%m-%d").to_string();
+        let filename = format!(".typing-time-{}.txt", date_str);
+        Path::new(&config.daily_notes_dir).join(filename)
+    }
+    
+    fn load_typing_time(config: &Config) -> io::Result<Duration> {
+        let path = Self::get_typing_time_file_path(config);
+        if path.exists() {
+            let contents = fs::read_to_string(&path)?;
+            if let Ok(secs) = contents.trim().parse::<u64>() {
+                return Ok(Duration::from_secs(secs));
+            }
+        }
+        Ok(Duration::from_secs(0))
+    }
+    
+    fn save_typing_time(&self) -> io::Result<()> {
+        let path = Self::get_typing_time_file_path(&self.config);
+        let total_secs = self.get_total_typing_time().as_secs();
+        fs::write(&path, total_secs.to_string())?;
+        Ok(())
+    }
+    
+    fn track_typing(&mut self) {
+        let now = Instant::now();
+        let typing_timeout = Duration::from_secs(5); // Consider typing stopped after 5 seconds of inactivity
+        
+        // If this is the first typing activity or we've been inactive
+        if self.typing_session_start.is_none() || now.duration_since(self.last_typing_activity) > typing_timeout {
+            self.typing_session_start = Some(now);
+        }
+        
+        self.last_typing_activity = now;
+    }
+    
+    fn get_total_typing_time(&self) -> Duration {
+        let mut total = self.accumulated_typing_time;
+        
+        // Add current session time if actively typing
+        if let Some(session_start) = self.typing_session_start {
+            let typing_timeout = Duration::from_secs(5);
+            if self.last_typing_activity.elapsed() <= typing_timeout {
+                total += self.last_typing_activity.duration_since(session_start);
+            }
+        }
+        
+        total
     }
 
     fn update_offset(&mut self) {
@@ -855,27 +953,29 @@ impl Editor {
         let goal = 500;
         let progress = ((word_count as f32 / goal as f32) * 100.0).min(100.0) as u32;
         
-        // Create progress bar
-        let bar_width = 20;
+        // Get typing time in minutes
+        let typing_time = self.get_total_typing_time();
+        let typing_mins = typing_time.as_secs() / 60;
+        
+        // Create fixed-width formatted strings
+        let word_str = format!("{:>4} words", word_count);  // Right-align in 4 chars
+        let percent_str = format!("{:>3}%", progress);      // Right-align in 3 chars
+        let time_str = format!("{:>3} min", typing_mins);   // Right-align in 3 chars
+        
+        // Calculate progress bar width - use full terminal width minus the text and spacing
+        // Layout: " [progress bar] word_str percent_str · time_str "
+        let text_width = 2 + 2 + word_str.len() + 1 + percent_str.len() + 3 + time_str.len() + 1; // brackets, spaces
+        let bar_width = (self.terminal_width as usize).saturating_sub(text_width).max(10);
         let filled = (bar_width as f32 * (progress as f32 / 100.0)) as usize;
         let empty = bar_width - filled;
         
-        let progress_bar = if filled == 0 {
-            format!("[{}]", " ".repeat(bar_width))
-        } else if filled >= bar_width {
-            format!("[{}]", "=".repeat(bar_width))
-        } else {
-            format!("[{}>{}]", 
-                "=".repeat(filled.saturating_sub(1)),
-                " ".repeat(empty)
-            )
-        };
-        
-        // Minimal status display
-        let status = format!(" {} words {} {}%", 
-            word_count, 
-            progress_bar,
-            progress
+        // Create the full-width status line
+        let status = format!(" [{}{}] {} {} · {}", 
+            "=".repeat(filled),
+            " ".repeat(empty),
+            word_str,
+            percent_str,
+            time_str
         );
         
         // Set color based on progress
