@@ -1,0 +1,9 @@
+# River Editor Configuration
+
+# Enable vim keybindings (true/false)
+# When true: Uses vim modes (Normal, Insert, Command) with vim keybindings
+# When false: Uses standard editor keybindings (always in insert mode)
+vim_bindings = false
+
+# Tab size (number of spaces for tab key)
+tab_size = 4

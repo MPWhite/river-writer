@@ -11,6 +11,9 @@ use crossterm::{
 use std::io::{self, Write};
 use std::time::Duration;
 
+mod config;
+use config::Config;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Mode {
     Normal,
@@ -31,11 +34,19 @@ struct Editor {
     command_buffer: String,
     clipboard: Vec<Vec<char>>,
     last_search: Option<String>,
+    config: Config,
 }
 
 impl Editor {
     fn new() -> io::Result<Self> {
         let (width, height) = terminal::size()?;
+        let config = Config::load();
+        let mode = if config.vim_bindings {
+            Mode::Normal
+        } else {
+            Mode::Insert
+        };
+        
         Ok(Editor {
             buffer: vec![Vec::new()],
             cursor_x: 0,
@@ -45,10 +56,11 @@ impl Editor {
             terminal_width: width,
             dirty: false,
             filename: None,
-            mode: Mode::Normal,
+            mode,
             command_buffer: String::new(),
             clipboard: Vec::new(),
             last_search: None,
+            config,
         })
     }
 
@@ -104,11 +116,46 @@ impl Editor {
     }
 
     fn handle_key_event(&mut self, key_event: KeyEvent) -> io::Result<bool> {
-        match self.mode {
-            Mode::Normal => self.handle_normal_mode(key_event),
-            Mode::Insert => self.handle_insert_mode(key_event),
-            Mode::Command => self.handle_command_mode(key_event),
+        if self.config.vim_bindings {
+            match self.mode {
+                Mode::Normal => self.handle_normal_mode(key_event),
+                Mode::Insert => self.handle_vim_insert_mode(key_event),
+                Mode::Command => self.handle_command_mode(key_event),
+            }
+        } else {
+            self.handle_standard_mode(key_event)
         }
+    }
+
+    fn handle_standard_mode(&mut self, key_event: KeyEvent) -> io::Result<bool> {
+        match key_event.code {
+            KeyCode::Char('q') if key_event.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
+            KeyCode::Char('s') if key_event.modifiers.contains(KeyModifiers::CONTROL) => self.save_file()?,
+            KeyCode::Char('f') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.mode = Mode::Command;
+                self.command_buffer = "/".to_string();
+                self.dirty = true;
+            }
+            KeyCode::Left => self.move_left(),
+            KeyCode::Right => self.move_right(),
+            KeyCode::Up => self.move_up(),
+            KeyCode::Down => self.move_down(),
+            KeyCode::Home => self.move_home(),
+            KeyCode::End => self.move_end(),
+            KeyCode::PageUp => self.page_up(),
+            KeyCode::PageDown => self.page_down(),
+            KeyCode::Backspace => self.backspace(),
+            KeyCode::Delete => self.delete(),
+            KeyCode::Enter => self.insert_newline(),
+            KeyCode::Tab => self.insert_tab(),
+            KeyCode::Char(c) => {
+                if !key_event.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+                    self.insert_char(c);
+                }
+            }
+            _ => {}
+        }
+        Ok(false)
     }
 
     fn handle_normal_mode(&mut self, key_event: KeyEvent) -> io::Result<bool> {
@@ -198,7 +245,7 @@ impl Editor {
         Ok(false)
     }
 
-    fn handle_insert_mode(&mut self, key_event: KeyEvent) -> io::Result<bool> {
+    fn handle_vim_insert_mode(&mut self, key_event: KeyEvent) -> io::Result<bool> {
         match key_event.code {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
@@ -232,13 +279,21 @@ impl Editor {
     fn handle_command_mode(&mut self, key_event: KeyEvent) -> io::Result<bool> {
         match key_event.code {
             KeyCode::Esc => {
-                self.mode = Mode::Normal;
+                if self.config.vim_bindings {
+                    self.mode = Mode::Normal;
+                } else {
+                    self.mode = Mode::Insert;
+                }
                 self.command_buffer.clear();
                 self.dirty = true;
             }
             KeyCode::Enter => {
                 let result = self.execute_command();
-                self.mode = Mode::Normal;
+                if self.config.vim_bindings {
+                    self.mode = Mode::Normal;
+                } else {
+                    self.mode = Mode::Insert;
+                }
                 self.command_buffer.clear();
                 self.dirty = true;
                 return result;
@@ -246,7 +301,11 @@ impl Editor {
             KeyCode::Backspace => {
                 self.command_buffer.pop();
                 if self.command_buffer.is_empty() {
-                    self.mode = Mode::Normal;
+                    if self.config.vim_bindings {
+                        self.mode = Mode::Normal;
+                    } else {
+                        self.mode = Mode::Insert;
+                    }
                 }
                 self.dirty = true;
             }
@@ -266,7 +325,7 @@ impl Editor {
                 self.last_search = Some(search_term);
                 self.search_next();
             }
-        } else {
+        } else if self.config.vim_bindings {
             match self.command_buffer.as_str() {
                 "q" => return Ok(true),
                 "w" => self.save_file()?,
@@ -288,7 +347,7 @@ impl Editor {
     fn move_left(&mut self) {
         if self.cursor_x > 0 {
             self.cursor_x -= 1;
-        } else if self.cursor_y > 0 && self.mode == Mode::Insert {
+        } else if self.cursor_y > 0 && (self.mode == Mode::Insert || !self.config.vim_bindings) {
             self.cursor_y -= 1;
             self.cursor_x = self.current_line().len();
         }
@@ -297,7 +356,7 @@ impl Editor {
 
     fn move_right(&mut self) {
         let line_len = self.current_line().len();
-        let max_x = if self.mode == Mode::Normal && line_len > 0 {
+        let max_x = if self.mode == Mode::Normal && line_len > 0 && self.config.vim_bindings {
             line_len - 1
         } else {
             line_len
@@ -305,7 +364,7 @@ impl Editor {
         
         if self.cursor_x < max_x {
             self.cursor_x += 1;
-        } else if self.cursor_y < self.buffer.len() - 1 && self.mode == Mode::Insert {
+        } else if self.cursor_y < self.buffer.len() - 1 && (self.mode == Mode::Insert || !self.config.vim_bindings) {
             self.cursor_y += 1;
             self.cursor_x = 0;
         }
@@ -316,7 +375,7 @@ impl Editor {
         if self.cursor_y > 0 {
             self.cursor_y -= 1;
             let line_len = self.current_line().len();
-            let max_x = if self.mode == Mode::Normal && line_len > 0 {
+            let max_x = if self.mode == Mode::Normal && line_len > 0 && self.config.vim_bindings {
                 line_len - 1
             } else {
                 line_len
@@ -330,7 +389,7 @@ impl Editor {
         if self.cursor_y < self.buffer.len() - 1 {
             self.cursor_y += 1;
             let line_len = self.current_line().len();
-            let max_x = if self.mode == Mode::Normal && line_len > 0 {
+            let max_x = if self.mode == Mode::Normal && line_len > 0 && self.config.vim_bindings {
                 line_len - 1
             } else {
                 line_len
@@ -347,7 +406,7 @@ impl Editor {
 
     fn move_end(&mut self) {
         let line_len = self.current_line().len();
-        self.cursor_x = if self.mode == Mode::Normal && line_len > 0 {
+        self.cursor_x = if self.mode == Mode::Normal && line_len > 0 && self.config.vim_bindings {
             line_len - 1
         } else {
             line_len
@@ -426,7 +485,7 @@ impl Editor {
     fn delete_char(&mut self) {
         if self.cursor_x < self.current_line().len() {
             self.buffer[self.cursor_y].remove(self.cursor_x);
-            if self.cursor_x > 0 && self.cursor_x == self.current_line().len() {
+            if self.cursor_x > 0 && self.cursor_x == self.current_line().len() && self.config.vim_bindings {
                 self.cursor_x -= 1;
             }
             self.dirty = true;
@@ -558,7 +617,7 @@ impl Editor {
         let page_size = (self.terminal_height - 2) as usize;
         self.cursor_y = self.cursor_y.saturating_sub(page_size);
         let line_len = self.current_line().len();
-        let max_x = if self.mode == Mode::Normal && line_len > 0 {
+        let max_x = if self.mode == Mode::Normal && line_len > 0 && self.config.vim_bindings {
             line_len - 1
         } else {
             line_len
@@ -571,7 +630,7 @@ impl Editor {
         let page_size = (self.terminal_height - 2) as usize;
         self.cursor_y = (self.cursor_y + page_size).min(self.buffer.len() - 1);
         let line_len = self.current_line().len();
-        let max_x = if self.mode == Mode::Normal && line_len > 0 {
+        let max_x = if self.mode == Mode::Normal && line_len > 0 && self.config.vim_bindings {
             line_len - 1
         } else {
             line_len
@@ -588,7 +647,7 @@ impl Editor {
     }
 
     fn insert_tab(&mut self) {
-        for _ in 0..4 {
+        for _ in 0..self.config.tab_size {
             self.insert_char(' ');
         }
     }
@@ -696,24 +755,33 @@ impl Editor {
             Clear(ClearType::CurrentLine)
         )?;
 
-        let mode_str = match self.mode {
-            Mode::Normal => "NORMAL",
-            Mode::Insert => "INSERT",
-            Mode::Command => "COMMAND",
-        };
-
         let filename_str = self.filename.as_ref()
             .map(|f| f.as_str())
             .unwrap_or("[No Name]");
 
-        let status = format!(
-            " {} | {} | {}:{} | {} lines",
-            mode_str,
-            filename_str,
-            self.cursor_y + 1,
-            self.cursor_x + 1,
-            self.buffer.len()
-        );
+        let status = if self.config.vim_bindings {
+            let mode_str = match self.mode {
+                Mode::Normal => "NORMAL",
+                Mode::Insert => "INSERT",
+                Mode::Command => "COMMAND",
+            };
+            format!(
+                " {} | {} | {}:{} | {} lines",
+                mode_str,
+                filename_str,
+                self.cursor_y + 1,
+                self.cursor_x + 1,
+                self.buffer.len()
+            )
+        } else {
+            format!(
+                " {} | {}:{} | {} lines | Ctrl+Q: Quit | Ctrl+S: Save | Ctrl+F: Find",
+                filename_str,
+                self.cursor_y + 1,
+                self.cursor_x + 1,
+                self.buffer.len()
+            )
+        };
 
         execute!(stdout, Print(&status))?;
         execute!(stdout, ResetColor)?;
