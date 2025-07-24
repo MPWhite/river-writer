@@ -130,12 +130,6 @@ impl Editor {
     fn handle_standard_mode(&mut self, key_event: KeyEvent) -> io::Result<bool> {
         match key_event.code {
             KeyCode::Char('q') if key_event.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
-            KeyCode::Char('s') if key_event.modifiers.contains(KeyModifiers::CONTROL) => self.save_file()?,
-            KeyCode::Char('f') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.mode = Mode::Command;
-                self.command_buffer = "/".to_string();
-                self.dirty = true;
-            }
             KeyCode::Left => self.move_left(),
             KeyCode::Right => self.move_right(),
             KeyCode::Up => self.move_up(),
@@ -775,7 +769,7 @@ impl Editor {
             )
         } else {
             format!(
-                " {} | {}:{} | {} lines | Ctrl+Q: Quit | Ctrl+S: Save | Ctrl+F: Find",
+                " {} | {}:{} | {} lines | Ctrl+Q: Quit",
                 filename_str,
                 self.cursor_y + 1,
                 self.cursor_x + 1,
