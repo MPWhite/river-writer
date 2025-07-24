@@ -1,0 +1,27 @@
+# Rust
+/target
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# Editor files
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/
+*.sublime-*
+
+# Debug
+*.log
+core
+
+# Backup files
+*.bak
+*.tmp
+*.orig
+
+# Test outputs
+*.profraw
+*.profdata
