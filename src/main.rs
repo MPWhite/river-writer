@@ -9,7 +9,7 @@ use crossterm::{
     },
 };
 use std::io::{self, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::path::{Path, PathBuf};
 use std::fs;
 use chrono::Local;
@@ -39,6 +39,8 @@ struct Editor {
     clipboard: Vec<Vec<char>>,
     last_search: Option<String>,
     config: Config,
+    needs_save: bool,
+    last_save: Instant,
 }
 
 impl Editor {
@@ -66,6 +68,8 @@ impl Editor {
             clipboard: Vec::new(),
             last_search: None,
             config,
+            needs_save: false,
+            last_save: Instant::now(),
         })
     }
 
@@ -74,6 +78,11 @@ impl Editor {
         
         loop {
             self.render()?;
+            
+            // Auto-save logic: save after 1 second of inactivity
+            if self.needs_save && self.last_save.elapsed() > Duration::from_secs(1) {
+                self.auto_save()?;
+            }
             
             if event::poll(Duration::from_millis(16))? {
                 if let Event::Key(key_event) = event::read()? {
@@ -90,6 +99,11 @@ impl Editor {
                     self.dirty = true;
                 }
             }
+        }
+        
+        // Save before exiting
+        if self.needs_save {
+            self.auto_save()?;
         }
         
         self.leave_raw_mode()?;
@@ -196,6 +210,8 @@ impl Editor {
                 self.move_home();
                 self.buffer.insert(self.cursor_y, Vec::new());
                 self.dirty = true;
+                self.needs_save = true;
+                self.last_save = Instant::now();
                 self.mode = Mode::Insert;
             }
             KeyCode::Char('h') | KeyCode::Left => self.move_left(),
@@ -327,11 +343,6 @@ impl Editor {
         } else if self.config.vim_bindings {
             match self.command_buffer.as_str() {
                 "q" => return Ok(true),
-                "w" => self.save_file()?,
-                "wq" => {
-                    self.save_file()?;
-                    return Ok(true);
-                }
                 _ => {}
             }
         }
@@ -488,6 +499,8 @@ impl Editor {
                 self.cursor_x -= 1;
             }
             self.dirty = true;
+            self.needs_save = true;
+            self.last_save = Instant::now();
         }
     }
 
@@ -503,6 +516,8 @@ impl Editor {
         }
         self.cursor_x = 0;
         self.dirty = true;
+        self.needs_save = true;
+        self.last_save = Instant::now();
     }
 
     fn yank_line(&mut self) {
@@ -517,6 +532,8 @@ impl Editor {
             self.cursor_y += 1;
             self.cursor_x = 0;
             self.dirty = true;
+            self.needs_save = true;
+            self.last_save = Instant::now();
         }
     }
 
@@ -527,6 +544,8 @@ impl Editor {
             }
             self.cursor_x = 0;
             self.dirty = true;
+            self.needs_save = true;
+            self.last_save = Instant::now();
         }
     }
 
@@ -670,6 +689,8 @@ impl Editor {
         }
         
         self.dirty = true;
+        self.needs_save = true;
+        self.last_save = Instant::now(); // Reset the timer on each change
     }
 
     fn insert_tab(&mut self) {
@@ -685,6 +706,8 @@ impl Editor {
         self.cursor_y += 1;
         self.cursor_x = 0;
         self.dirty = true;
+        self.needs_save = true;
+        self.last_save = Instant::now();
     }
 
     fn backspace(&mut self) {
@@ -692,12 +715,16 @@ impl Editor {
             self.buffer[self.cursor_y].remove(self.cursor_x - 1);
             self.cursor_x -= 1;
             self.dirty = true;
+            self.needs_save = true;
+            self.last_save = Instant::now();
         } else if self.cursor_y > 0 {
             let current_line = self.buffer.remove(self.cursor_y);
             self.cursor_y -= 1;
             self.cursor_x = self.buffer[self.cursor_y].len();
             self.buffer[self.cursor_y].extend(current_line);
             self.dirty = true;
+            self.needs_save = true;
+            self.last_save = Instant::now();
         }
     }
 
@@ -706,10 +733,14 @@ impl Editor {
         if self.cursor_x < line_len {
             self.buffer[self.cursor_y].remove(self.cursor_x);
             self.dirty = true;
+            self.needs_save = true;
+            self.last_save = Instant::now();
         } else if self.cursor_y < self.buffer.len() - 1 {
             let next_line = self.buffer.remove(self.cursor_y + 1);
             self.buffer[self.cursor_y].extend(next_line);
             self.dirty = true;
+            self.needs_save = true;
+            self.last_save = Instant::now();
         }
     }
 
@@ -801,6 +832,12 @@ impl Editor {
             .map(|f| f.as_str())
             .unwrap_or("[No Name]");
 
+        let save_indicator = if self.needs_save {
+            " [Modified]"
+        } else {
+            ""
+        };
+        
         let status = if self.config.vim_bindings {
             let mode_str = match self.mode {
                 Mode::Normal => "NORMAL",
@@ -808,17 +845,19 @@ impl Editor {
                 Mode::Command => "COMMAND",
             };
             format!(
-                " {} | {} | {}:{} | {} lines",
+                " {} | {}{} | {}:{} | {} lines",
                 mode_str,
                 filename_str,
+                save_indicator,
                 self.cursor_y + 1,
                 self.cursor_x + 1,
                 self.buffer.len()
             )
         } else {
             format!(
-                " {} | {}:{} | {} lines | Ctrl+Q: Quit",
+                " {}{} | {}:{} | {} lines | Ctrl+Q: Quit",
                 filename_str,
+                save_indicator,
                 self.cursor_y + 1,
                 self.cursor_x + 1,
                 self.buffer.len()
@@ -850,8 +889,14 @@ impl Editor {
                 .join("\n");
             
             std::fs::write(filename, content)?;
+            self.needs_save = false;
+            self.last_save = Instant::now();
         }
         Ok(())
+    }
+    
+    fn auto_save(&mut self) -> io::Result<()> {
+        self.save_file()
     }
 
     fn load_file(&mut self, filename: &str) -> io::Result<()> {
