@@ -2,7 +2,7 @@ use crossterm::{
     cursor::{Hide, MoveTo, Show},
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
-    style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
+    style::{Color, Print, ResetColor, SetForegroundColor},
     terminal::{
         self, Clear, ClearType, DisableLineWrap, EnableLineWrap, EnterAlternateScreen,
         LeaveAlternateScreen,
@@ -747,6 +747,27 @@ impl Editor {
     fn current_line(&self) -> &Vec<char> {
         &self.buffer[self.cursor_y]
     }
+    
+    fn count_words(&self) -> usize {
+        let mut word_count = 0;
+        let mut in_word = false;
+        
+        for line in &self.buffer {
+            for ch in line {
+                if ch.is_alphanumeric() {
+                    if !in_word {
+                        word_count += 1;
+                        in_word = true;
+                    }
+                } else {
+                    in_word = false;
+                }
+            }
+            in_word = false; // Reset at end of line
+        }
+        
+        word_count
+    }
 
     fn update_offset(&mut self) {
         let visible_height = (self.terminal_height - 2) as usize;
@@ -820,61 +841,67 @@ impl Editor {
         let mut stdout = io::stdout();
         let y = self.terminal_height - 2;
 
+        // Clear status bar area
         execute!(
             stdout,
             MoveTo(0, y),
-            SetBackgroundColor(Color::DarkGrey),
-            SetForegroundColor(Color::White),
-            Clear(ClearType::CurrentLine)
-        )?;
-
-        let filename_str = self.filename.as_ref()
-            .map(|f| f.as_str())
-            .unwrap_or("[No Name]");
-
-        let save_indicator = if self.needs_save {
-            " [Modified]"
-        } else {
-            ""
-        };
-        
-        let status = if self.config.vim_bindings {
-            let mode_str = match self.mode {
-                Mode::Normal => "NORMAL",
-                Mode::Insert => "INSERT",
-                Mode::Command => "COMMAND",
-            };
-            format!(
-                " {} | {}{} | {}:{} | {} lines",
-                mode_str,
-                filename_str,
-                save_indicator,
-                self.cursor_y + 1,
-                self.cursor_x + 1,
-                self.buffer.len()
-            )
-        } else {
-            format!(
-                " {}{} | {}:{} | {} lines | Ctrl+Q: Quit",
-                filename_str,
-                save_indicator,
-                self.cursor_y + 1,
-                self.cursor_x + 1,
-                self.buffer.len()
-            )
-        };
-
-        execute!(stdout, Print(&status))?;
-        execute!(stdout, ResetColor)?;
-
-        execute!(
-            stdout,
+            Clear(ClearType::CurrentLine),
             MoveTo(0, y + 1),
             Clear(ClearType::CurrentLine)
         )?;
 
+        // Calculate word count and progress
+        let word_count = self.count_words();
+        let goal = 500;
+        let progress = ((word_count as f32 / goal as f32) * 100.0).min(100.0) as u32;
+        
+        // Create progress bar
+        let bar_width = 20;
+        let filled = (bar_width as f32 * (progress as f32 / 100.0)) as usize;
+        let empty = bar_width - filled;
+        
+        let progress_bar = if filled == 0 {
+            format!("[{}]", " ".repeat(bar_width))
+        } else if filled >= bar_width {
+            format!("[{}]", "=".repeat(bar_width))
+        } else {
+            format!("[{}>{}]", 
+                "=".repeat(filled.saturating_sub(1)),
+                " ".repeat(empty)
+            )
+        };
+        
+        // Minimal status display
+        let status = format!(" {} words {} {}%", 
+            word_count, 
+            progress_bar,
+            progress
+        );
+        
+        // Set color based on progress
+        let color = if word_count >= goal {
+            Color::Green
+        } else if word_count >= goal * 3 / 4 {
+            Color::Yellow
+        } else {
+            Color::White
+        };
+        
+        execute!(
+            stdout,
+            MoveTo(0, y),
+            SetForegroundColor(color),
+            Print(&status),
+            ResetColor
+        )?;
+
+        // Show command buffer if in command mode
         if self.mode == Mode::Command {
-            execute!(stdout, Print(&self.command_buffer))?;
+            execute!(
+                stdout,
+                MoveTo(0, y + 1),
+                Print(&self.command_buffer)
+            )?;
         }
 
         Ok(())
