@@ -1074,6 +1074,181 @@ impl Editor {
     }
 }
 
+fn show_stats() -> io::Result<()> {
+    let config = Config::load();
+    let stats_dir = Path::new(&config.daily_notes_dir);
+    
+    // Collect stats data
+    let mut _total_typing_seconds = 0u64;
+    let mut total_files = 0;
+    let mut daily_stats: Vec<(String, u64)> = Vec::new();
+    let mut consecutive_days = 0;
+    let today = Local::now();
+    
+    // Check last 30 days for streak and collect data
+    for days_ago in 0..30 {
+        let date = today - chrono::Duration::days(days_ago);
+        let date_str = date.format("%Y-%m-%d").to_string();
+        let stats_file = stats_dir.join(format!(".stats-{}.toml", date_str));
+        let note_file = stats_dir.join(format!("{}.md", date_str));
+        
+        if stats_file.exists() {
+            if let Ok(contents) = fs::read_to_string(&stats_file) {
+                if let Ok(stats) = toml::from_str::<DailyStats>(&contents) {
+                    if stats.typing_seconds > 0 {
+                        if days_ago as usize == consecutive_days {
+                            consecutive_days += 1;
+                        }
+                        daily_stats.push((date_str.clone(), stats.typing_seconds));
+                        _total_typing_seconds += stats.typing_seconds;
+                    }
+                }
+            }
+        }
+        
+        if note_file.exists() {
+            total_files += 1;
+        }
+    }
+    
+    // Calculate weekly average (last 7 days)
+    let weekly_typing: u64 = daily_stats.iter()
+        .take(7)
+        .map(|(_, secs)| secs)
+        .sum();
+    let weekly_avg = weekly_typing / 7;
+    
+    // Clear screen and display stats
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        Clear(ClearType::All),
+        Hide
+    )?;
+    
+    let mut stdout = io::stdout();
+    
+    // Header
+    execute!(
+        stdout,
+        MoveTo(2, 1),
+        SetForegroundColor(Color::Cyan),
+        Print("River Writing Statistics"),
+        ResetColor
+    )?;
+    
+    // Today's stats
+    let today_str = today.format("%Y-%m-%d").to_string();
+    let today_typing = daily_stats.iter()
+        .find(|(date, _)| date == &today_str)
+        .map(|(_, secs)| *secs)
+        .unwrap_or(0);
+    
+    execute!(
+        stdout,
+        MoveTo(2, 3),
+        Print("Today:"),
+        MoveTo(20, 3),
+        SetForegroundColor(Color::Green),
+        Print(format!("{} min", today_typing / 60)),
+        ResetColor
+    )?;
+    
+    // Streak
+    execute!(
+        stdout,
+        MoveTo(2, 4),
+        Print("Current Streak:"),
+        MoveTo(20, 4),
+        SetForegroundColor(if consecutive_days > 0 { Color::Yellow } else { Color::DarkGrey }),
+        Print(format!("{} days", consecutive_days)),
+        ResetColor
+    )?;
+    
+    // Weekly average
+    execute!(
+        stdout,
+        MoveTo(2, 5),
+        Print("Weekly Average:"),
+        MoveTo(20, 5),
+        SetForegroundColor(Color::Blue),
+        Print(format!("{} min/day", weekly_avg / 60)),
+        ResetColor
+    )?;
+    
+    // Total files
+    execute!(
+        stdout,
+        MoveTo(2, 6),
+        Print("Total Notes:"),
+        MoveTo(20, 6),
+        SetForegroundColor(Color::Magenta),
+        Print(format!("{}", total_files)),
+        ResetColor
+    )?;
+    
+    // Last 7 days chart
+    execute!(
+        stdout,
+        MoveTo(2, 8),
+        SetForegroundColor(Color::Cyan),
+        Print("Last 7 Days:"),
+        ResetColor
+    )?;
+    
+    let max_mins = daily_stats.iter()
+        .take(7)
+        .map(|(_, secs)| secs / 60)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    
+    for (i, (_date, secs)) in daily_stats.iter().take(7).enumerate() {
+        let mins = secs / 60;
+        let bar_width = if max_mins > 0 { (mins * 30 / max_mins).min(30) } else { 0 };
+        let day_str = Local::now().checked_sub_signed(chrono::Duration::days(i as i64))
+            .map(|d| d.format("%a").to_string())
+            .unwrap_or_default();
+        
+        execute!(
+            stdout,
+            MoveTo(2, 10 + i as u16),
+            Print(format!("{:>3}", day_str)),
+            MoveTo(6, 10 + i as u16),
+            SetForegroundColor(Color::Green),
+            Print("█".repeat(bar_width as usize)),
+            SetForegroundColor(Color::DarkGrey),
+            Print("░".repeat((30 - bar_width) as usize)),
+            ResetColor,
+            MoveTo(38, 10 + i as u16),
+            Print(format!("{:>3} min", mins))
+        )?;
+    }
+    
+    // Footer
+    execute!(
+        stdout,
+        MoveTo(2, 20),
+        SetForegroundColor(Color::DarkGrey),
+        Print("Press any key to exit"),
+        ResetColor
+    )?;
+    
+    stdout.flush()?;
+    
+    // Wait for key press
+    event::read()?;
+    
+    // Clean up
+    execute!(
+        stdout,
+        Show,
+        LeaveAlternateScreen
+    )?;
+    
+    Ok(())
+}
+
 fn get_daily_note_path(config: &Config) -> io::Result<PathBuf> {
     let today = Local::now();
     let date_str = today.format("%Y-%m-%d").to_string();
@@ -1097,6 +1272,13 @@ fn create_daily_note_content() -> String {
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    
+    // Check for --stats flag
+    if args.len() > 1 && args[1] == "--stats" {
+        show_stats()?;
+        return Ok(());
+    }
+    
     let mut editor = Editor::new()?;
     
     if args.len() > 1 {
