@@ -90,7 +90,6 @@ struct Editor {
     command_buffer: String,
     
     clipboard: Vec<Vec<char>>, // For copy/paste operations
-    last_search: Option<String>,
     config: Config,           // User configuration
     needs_save: bool,
     
@@ -141,7 +140,6 @@ impl Editor {
             mode,
             command_buffer: String::new(),
             clipboard: Vec::new(),
-            last_search: None,
             config,
             needs_save: false,
             last_save: Instant::now(),
@@ -367,13 +365,6 @@ impl Editor {
             }
             KeyCode::Char('p') => self.paste_after(),
             KeyCode::Char('P') => self.paste_before(),
-            KeyCode::Char('/') => {
-                self.mode = Mode::Command;
-                self.command_buffer = "/".to_string();
-                self.dirty = true;
-            }
-            KeyCode::Char('n') => self.search_next(),
-            KeyCode::Char('N') => self.search_prev(),
             KeyCode::PageUp => self.page_up(),
             KeyCode::PageDown => self.page_down(),
             _ => {}
@@ -455,13 +446,7 @@ impl Editor {
     }
 
     fn execute_command(&mut self) -> io::Result<bool> {
-        if self.command_buffer.starts_with('/') {
-            let search_term = self.command_buffer[1..].to_string();
-            if !search_term.is_empty() {
-                self.last_search = Some(search_term);
-                self.search_next();
-            }
-        } else if self.config.vim_bindings {
+        if self.config.vim_bindings {
             match self.command_buffer.as_str() {
                 "q" => return Ok(true),
                 _ => {}
@@ -680,87 +665,6 @@ impl Editor {
         }
     }
 
-    fn search_next(&mut self) {
-        if let Some(search) = &self.last_search {
-            let search_chars: Vec<char> = search.chars().collect();
-            let mut found = false;
-            
-            // Search from current position
-            for y in self.cursor_y..self.buffer.len() {
-                let start_x = if y == self.cursor_y { self.cursor_x + 1 } else { 0 };
-                let line = &self.buffer[y];
-                
-                for x in start_x..line.len() {
-                    if x + search_chars.len() <= line.len() {
-                        let matches = (0..search_chars.len())
-                            .all(|i| line[x + i] == search_chars[i]);
-                        if matches {
-                            self.cursor_y = y;
-                            self.cursor_x = x;
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-                if found { break; }
-            }
-            
-            // Wrap around to beginning
-            if !found {
-                for y in 0..=self.cursor_y {
-                    let line = &self.buffer[y];
-                    let end_x = if y == self.cursor_y { self.cursor_x } else { line.len() };
-                    
-                    for x in 0..end_x {
-                        if x + search_chars.len() <= line.len() {
-                            let matches = (0..search_chars.len())
-                                .all(|i| line[x + i] == search_chars[i]);
-                            if matches {
-                                self.cursor_y = y;
-                                self.cursor_x = x;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            
-            self.dirty = true;
-        }
-    }
-
-    fn search_prev(&mut self) {
-        if let Some(search) = &self.last_search {
-            let search_chars: Vec<char> = search.chars().collect();
-            let mut found = false;
-            
-            // Search backward from current position
-            for y in (0..=self.cursor_y).rev() {
-                let line = &self.buffer[y];
-                let end_x = if y == self.cursor_y {
-                    self.cursor_x.saturating_sub(1)
-                } else {
-                    line.len().saturating_sub(search_chars.len())
-                };
-                
-                for x in (0..=end_x).rev() {
-                    if x + search_chars.len() <= line.len() {
-                        let matches = (0..search_chars.len())
-                            .all(|i| line[x + i] == search_chars[i]);
-                        if matches {
-                            self.cursor_y = y;
-                            self.cursor_x = x;
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-                if found { break; }
-            }
-            
-            self.dirty = true;
-        }
-    }
 
     fn page_up(&mut self) {
         let page_size = (self.terminal_height - 2) as usize;
