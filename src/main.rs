@@ -1179,6 +1179,7 @@ fn show_stats() -> io::Result<()> {
     let mut daily_stats: Vec<(String, u64)> = Vec::new(); // Tuple in Vec
     let mut consecutive_days = 0;
     let today = Local::now();
+    let mut streak_broken = false;
     
     // Check last 30 days for streak and collect data
     // Range 0..30 creates an iterator from 0 to 29 (exclusive end)
@@ -1188,15 +1189,36 @@ fn show_stats() -> io::Result<()> {
         let stats_file = stats_dir.join(format!(".stats-{}.toml", date_str));
         let note_file = stats_dir.join(format!("{}.md", date_str));
         
+        // Check for streak (only if not already broken)
+        if !streak_broken {
+            if stats_file.exists() {
+                if let Ok(contents) = fs::read_to_string(&stats_file) {
+                    if let Ok(stats) = toml::from_str::<DailyStats>(&contents) {
+                        if stats.typing_seconds > 0 && days_ago == consecutive_days as i64 {
+                            consecutive_days += 1;
+                        } else if days_ago == consecutive_days as i64 {
+                            // Expected day in streak has no typing data
+                            streak_broken = true;
+                        }
+                    } else if days_ago == consecutive_days as i64 {
+                        // Can't parse stats for expected day in streak
+                        streak_broken = true;
+                    }
+                } else if days_ago == consecutive_days as i64 {
+                    // Can't read file for expected day in streak
+                    streak_broken = true;
+                }
+            } else if days_ago == consecutive_days as i64 {
+                // No stats file for expected day in streak
+                streak_broken = true;
+            }
+        }
+        
+        // Collect stats data (regardless of streak status)
         if stats_file.exists() {
             if let Ok(contents) = fs::read_to_string(&stats_file) {
-                // Turbofish syntax ::<Type> specifies generic type parameter
-                // Tells from_str what type to deserialize into
                 if let Ok(stats) = toml::from_str::<DailyStats>(&contents) {
                     if stats.typing_seconds > 0 {
-                        if days_ago as usize == consecutive_days {
-                            consecutive_days += 1;
-                        }
                         daily_stats.push((date_str.clone(), stats.typing_seconds));
                         _total_typing_seconds += stats.typing_seconds;
                     }
@@ -1295,33 +1317,66 @@ fn show_stats() -> io::Result<()> {
         ResetColor
     )?;
     
-    let max_mins = daily_stats.iter()
-        .take(7)
-        .map(|(_, secs)| secs / 60)
+    // Create a map of date strings to typing seconds for quick lookup
+    let stats_map: std::collections::HashMap<String, u64> = daily_stats.iter()
+        .map(|(date, secs)| (date.clone(), *secs))
+        .collect();
+    
+    // Find max minutes for scaling (only from days that have data)
+    let max_mins = stats_map.values()
+        .map(|secs| secs / 60)
         .max()
         .unwrap_or(1)
         .max(1);
     
-    // enumerate() adds index to iterator items
-    // Pattern (i, (_date, secs)) destructures nested tuples
-    for (i, (_date, secs)) in daily_stats.iter().take(7).enumerate() {
-        let mins = secs / 60;
-        let bar_width = if max_mins > 0 { (mins * 30 / max_mins).min(30) } else { 0 };
-        // Method chaining with Option handling
-        let day_str = Local::now().checked_sub_signed(chrono::Duration::days(i as i64))
-            .map(|d| d.format("%a").to_string())  // Transform Some(date) to Some(string)
-            .unwrap_or_default();                  // Use default (empty string) if None
+    // Display all 7 days, including those without data
+    for i in 0..7 {
+        let date = today - chrono::Duration::days(i as i64);
+        let date_str = date.format("%Y-%m-%d").to_string();
+        let day_str = date.format("%a").to_string();
+        
+        // Get typing minutes for this day (0 if no data)
+        let mins = stats_map.get(&date_str)
+            .map(|secs| secs / 60)
+            .unwrap_or(0);
+        
+        let bar_width = if mins > 0 && max_mins > 0 { 
+            (mins * 30 / max_mins).min(30) 
+        } else { 
+            0 
+        };
         
         execute!(
             stdout,
             MoveTo(2, 10 + i as u16),
             Print(format!("{:>3}", day_str)),
             MoveTo(6, 10 + i as u16),
-            SetForegroundColor(Color::Green),
-            Print("█".repeat(bar_width as usize)),
-            SetForegroundColor(Color::DarkGrey),
-            Print("░".repeat((30 - bar_width) as usize)),
-            ResetColor,
+        )?;
+        
+        if mins > 0 {
+            // Green bars for days with typing data
+            execute!(
+                stdout,
+                SetForegroundColor(Color::Green),
+                Print("█".repeat(bar_width as usize)),
+                SetForegroundColor(Color::DarkGrey),
+                Print("░".repeat((30 - bar_width) as usize)),
+                ResetColor
+            )?;
+        } else {
+            // Red indicator for days with no typing data
+            execute!(
+                stdout,
+                SetForegroundColor(Color::Red),
+                Print("▬"),
+                SetForegroundColor(Color::DarkGrey),
+                Print("░".repeat(29)),
+                ResetColor
+            )?;
+        }
+        
+        execute!(
+            stdout,
             MoveTo(38, 10 + i as u16),
             Print(format!("{:>3} min", mins))
         )?;
