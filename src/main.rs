@@ -45,7 +45,8 @@ struct DailyStats {
     // #[serde(default)] uses Default::default() if field is missing during deserialization
     #[serde(default)]
     typing_seconds: u64, // u64 is an unsigned 64-bit integer
-    // Future stats can be added here
+    #[serde(default)]
+    word_count: u64, // Total words written today
 }
 
 // 'impl' blocks add methods to types
@@ -55,6 +56,7 @@ impl Default for DailyStats {
     fn default() -> Self {
         DailyStats {
             typing_seconds: 0,
+            word_count: 0,
         }
     }
 }
@@ -936,6 +938,7 @@ impl Editor {
         let path = Self::get_stats_file_path(&self.config);
         let stats = DailyStats {
             typing_seconds: self.get_total_typing_time().as_secs(),
+            word_count: self.count_words() as u64,
         };
         let toml_str = toml::to_string(&stats).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         fs::write(&path, toml_str)?;
@@ -1164,6 +1167,26 @@ impl Editor {
     }
 }
 
+// Helper function to count words in a markdown file
+fn count_words_in_file(path: &Path) -> io::Result<usize> {
+    let content = fs::read_to_string(path)?;
+    let mut word_count = 0;
+    let mut in_word = false;
+    
+    for ch in content.chars() {
+        if ch.is_alphanumeric() {
+            if !in_word {
+                word_count += 1;
+                in_word = true;
+            }
+        } else {
+            in_word = false;
+        }
+    }
+    
+    Ok(word_count)
+}
+
 // Standalone function (not a method) - no self parameter
 fn show_stats() -> io::Result<()> {
     let config = Config::load();
@@ -1176,7 +1199,8 @@ fn show_stats() -> io::Result<()> {
     let mut _total_typing_seconds = 0u64; // u64 literal
     let mut total_files = 0;
     // Type annotation with turbofish ::<> syntax
-    let mut daily_stats: Vec<(String, u64)> = Vec::new(); // Tuple in Vec
+    // Now storing date, typing_seconds, and word_count
+    let mut daily_stats: Vec<(String, u64, u64)> = Vec::new(); // Tuple in Vec
     let mut consecutive_days = 0;
     let today = Local::now();
     let mut streak_broken = false;
@@ -1217,9 +1241,15 @@ fn show_stats() -> io::Result<()> {
         // Collect stats data (regardless of streak status)
         if stats_file.exists() {
             if let Ok(contents) = fs::read_to_string(&stats_file) {
-                if let Ok(stats) = toml::from_str::<DailyStats>(&contents) {
+                if let Ok(mut stats) = toml::from_str::<DailyStats>(&contents) {
                     if stats.typing_seconds > 0 {
-                        daily_stats.push((date_str.clone(), stats.typing_seconds));
+                        // If word_count is 0 (historical data), try to get it from the note file
+                        if stats.word_count == 0 && note_file.exists() {
+                            if let Ok(word_count) = count_words_in_file(&note_file) {
+                                stats.word_count = word_count as u64;
+                            }
+                        }
+                        daily_stats.push((date_str.clone(), stats.typing_seconds, stats.word_count));
                         _total_typing_seconds += stats.typing_seconds;
                     }
                 }
@@ -1235,7 +1265,7 @@ fn show_stats() -> io::Result<()> {
     // Iterator adapter chain - common Rust pattern
     let weekly_typing: u64 = daily_stats.iter()
         .take(7)                    // Take first 7 elements
-        .map(|(_, secs)| secs)     // Destructure tuple, ignore first element with _
+        .map(|(_, secs, _)| secs)   // Destructure tuple, ignore first and third elements
         .sum();                     // Sum all values (requires type annotation)
     let weekly_avg = weekly_typing / 7;
     
@@ -1261,8 +1291,8 @@ fn show_stats() -> io::Result<()> {
     // Today's stats
     let today_str = today.format("%Y-%m-%d").to_string();
     let today_typing = daily_stats.iter()
-        .find(|(date, _)| date == &today_str)
-        .map(|(_, secs)| *secs)
+        .find(|(date, _, _)| date == &today_str)
+        .map(|(_, secs, _)| *secs)
         .unwrap_or(0);
     
     execute!(
@@ -1317,14 +1347,14 @@ fn show_stats() -> io::Result<()> {
         ResetColor
     )?;
     
-    // Create a map of date strings to typing seconds for quick lookup
-    let stats_map: std::collections::HashMap<String, u64> = daily_stats.iter()
-        .map(|(date, secs)| (date.clone(), *secs))
+    // Create a map of date strings to (typing_seconds, word_count) for quick lookup
+    let stats_map: std::collections::HashMap<String, (u64, u64)> = daily_stats.iter()
+        .map(|(date, secs, words)| (date.clone(), (*secs, *words)))
         .collect();
     
     // Find max minutes for scaling (only from days that have data)
     let max_mins = stats_map.values()
-        .map(|secs| secs / 60)
+        .map(|(secs, _)| secs / 60)
         .max()
         .unwrap_or(1)
         .max(1);
@@ -1335,13 +1365,13 @@ fn show_stats() -> io::Result<()> {
         let date_str = date.format("%Y-%m-%d").to_string();
         let day_str = date.format("%a").to_string();
         
-        // Get typing minutes for this day (0 if no data)
-        let mins = stats_map.get(&date_str)
-            .map(|secs| secs / 60)
-            .unwrap_or(0);
+        // Get typing minutes and words for this day (0 if no data)
+        let (mins, words) = stats_map.get(&date_str)
+            .map(|(secs, words)| (secs / 60, *words))
+            .unwrap_or((0, 0));
         
         let bar_width = if mins > 0 && max_mins > 0 { 
-            (mins * 30 / max_mins).min(30) 
+            (mins * 20 / max_mins).min(20)  // Reduced to 20 to make room for text
         } else { 
             0 
         };
@@ -1360,7 +1390,7 @@ fn show_stats() -> io::Result<()> {
                 SetForegroundColor(Color::Green),
                 Print("█".repeat(bar_width as usize)),
                 SetForegroundColor(Color::DarkGrey),
-                Print("░".repeat((30 - bar_width) as usize)),
+                Print("░".repeat((20 - bar_width) as usize)),
                 ResetColor
             )?;
         } else {
@@ -1370,15 +1400,22 @@ fn show_stats() -> io::Result<()> {
                 SetForegroundColor(Color::Red),
                 Print("▬"),
                 SetForegroundColor(Color::DarkGrey),
-                Print("░".repeat(29)),
+                Print("░".repeat(19)),
                 ResetColor
             )?;
         }
         
+        // Display both time and words in a compact format
         execute!(
             stdout,
-            MoveTo(38, 10 + i as u16),
-            Print(format!("{:>3} min", mins))
+            MoveTo(28, 10 + i as u16),
+            SetForegroundColor(Color::Cyan),
+            Print(format!("{:>3} min", mins)),
+            SetForegroundColor(Color::DarkGrey),
+            Print(" │ "),
+            SetForegroundColor(Color::Magenta),
+            Print(format!("{:>4} words", words)),
+            ResetColor
         )?;
     }
     
