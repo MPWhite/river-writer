@@ -717,11 +717,6 @@ impl Editor {
         // Track typing activity
         self.track_typing();
         
-        // Hide prompt on first keystroke
-        if self.should_show_prompt {
-            self.should_show_prompt = false;
-        }
-        
         // &mut creates a mutable reference - can modify the line
         let line = &mut self.buffer[self.cursor_y];
         line.insert(self.cursor_x, c);
@@ -766,11 +761,6 @@ impl Editor {
 
     fn insert_newline(&mut self) {
         self.track_typing(); // Track typing activity
-        
-        // Hide prompt on any editing action
-        if self.should_show_prompt {
-            self.should_show_prompt = false;
-        }
         
         let current_line = &mut self.buffer[self.cursor_y];
         let new_line: Vec<char> = current_line.drain(self.cursor_x..).collect();
@@ -875,27 +865,19 @@ impl Editor {
     }
     
     fn should_display_prompt(&self) -> bool {
-        // Only show prompt if:
+        // Show prompt if:
         // 1. Prompts are enabled in config
         // 2. Prompt style is "ghost"
-        // 3. Buffer is empty (just the header line or completely empty)
-        // 4. We haven't started typing yet
+        // 3. We have a current prompt set
+        // 4. The document has a header on the first line
         
         if !self.config.show_prompts || self.config.prompt_style != "ghost" {
             return false;
         }
         
-        // Check if buffer is essentially empty
-        if self.buffer.len() == 1 && self.buffer[0].is_empty() {
+        // Check if first line looks like a header (starts with #)
+        if !self.buffer.is_empty() && !self.buffer[0].is_empty() && self.buffer[0][0] == '#' {
             return true;
-        }
-        
-        // Check if we only have the header line and an empty line
-        if self.buffer.len() == 2 && self.buffer[1].is_empty() {
-            // Check if first line looks like a header (starts with #)
-            if !self.buffer[0].is_empty() && self.buffer[0][0] == '#' {
-                return true;
-            }
         }
         
         false
@@ -1006,8 +988,10 @@ impl Editor {
                     // .collect() builds String from iterator
                     let line_str: String = line[visible_start..visible_end].iter().collect();
                     execute!(stdout, Print(&line_str))?;
-                } else if self.should_show_prompt && file_y == self.cursor_y && self.cursor_x == 0 {
-                    // Show the prompt as ghost text when cursor is at start of empty line
+                }
+                
+                // Show prompt on the appropriate empty line (typically line 1 after header)
+                if self.should_show_prompt && line.is_empty() && file_y == 1 {
                     if let Some(ref prompt) = self.current_prompt {
                         execute!(stdout, SetForegroundColor(Color::DarkGrey))?;
                         execute!(stdout, Print("> "))?;
@@ -1159,8 +1143,9 @@ impl Editor {
         // Check if we should show a prompt
         if self.should_display_prompt() {
             self.current_prompt = Some(self.get_daily_prompt());
-            self.should_show_prompt = true;
         }
+        // Always keep should_show_prompt in sync with should_display_prompt
+        self.should_show_prompt = self.should_display_prompt();
         
         self.dirty = true;
         Ok(())
