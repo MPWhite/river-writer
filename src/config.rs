@@ -32,6 +32,9 @@ pub struct Config {
     
     #[serde(default = "default_prompt_style")]
     pub prompt_style: String, // "ghost" or "none" or "command_only"
+    
+    #[serde(default = "default_use_ai_prompts")]
+    pub use_ai_prompts: bool,
 }
 
 // These functions provide default values for config fields
@@ -70,6 +73,10 @@ fn default_prompt_style() -> String {
     "ghost".to_string()
 }
 
+fn default_use_ai_prompts() -> bool {
+    true
+}
+
 // Implementing the Default trait allows Config::default() to be called
 // This is useful for creating instances with sensible defaults
 impl Default for Config {
@@ -82,6 +89,7 @@ impl Default for Config {
             typing_timeout_seconds: default_typing_timeout_seconds(),
             show_prompts: default_show_prompts(),
             prompt_style: default_prompt_style(),
+            use_ai_prompts: default_use_ai_prompts(),
         }
     }
 }

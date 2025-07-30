@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize}; // Serialization traits
 
 // Module declaration - tells Rust to look for config.rs or config/mod.rs
 mod config;
+mod ai;
 // Bring Config struct into scope from our config module
 use config::Config;
 
@@ -842,7 +843,16 @@ impl Editor {
     }
     
     fn get_daily_prompt(&self) -> String {
-        // Simple array of prompts for now
+        let today = Local::now().date_naive();
+        
+        // First try to get AI-generated prompt if enabled
+        if self.config.use_ai_prompts {
+            if let Some(ai_prompt) = ai::get_ai_prompt(&self.config, &today) {
+                return ai_prompt;
+            }
+        }
+        
+        // Fall back to static prompts
         let prompts = vec![
             "What moment from today do you want to remember?",
             "What are you grateful for today?",
@@ -857,7 +867,6 @@ impl Editor {
         ];
         
         // Use the current date as a seed for consistent daily prompts
-        let today = Local::now();
         let day_of_year = today.ordinal() as usize;
         let prompt_index = day_of_year % prompts.len();
         
@@ -1462,6 +1471,12 @@ fn main() -> io::Result<()> {
         return Ok(()); // Early return with unit value
     }
     
+    // Check for --generate-prompts flag
+    if args.len() > 1 && args[1] == "--generate-prompts" {
+        generate_ai_prompts()?;
+        return Ok(());
+    }
+    
     let mut editor = Editor::new()?;
     
     if args.len() > 1 {
@@ -1482,4 +1497,27 @@ fn main() -> io::Result<()> {
     
     // Last expression without ; is the return value
     editor.run()
+}
+
+// Function to generate AI prompts using the AI module
+fn generate_ai_prompts() -> io::Result<()> {
+    let config = Config::load();
+    
+    match ai::PromptGenerator::new(&config) {
+        Ok(generator) => {
+            if let Err(e) = generator.generate_prompts() {
+                eprintln!("Error generating prompts: {}", e);
+                eprintln!("\nMake sure ANTHROPIC_API_KEY is set in your environment.");
+                std::process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error initializing prompt generator: {}", e);
+            eprintln!("\nTo use AI prompts, set the ANTHROPIC_API_KEY environment variable:");
+            eprintln!("export ANTHROPIC_API_KEY='your-api-key-here'");
+            std::process::exit(1);
+        }
+    }
+    
+    Ok(())
 }

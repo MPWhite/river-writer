@@ -26,3 +26,9 @@ show_prompts = true
 # - command_only: Only accessible via :prompt command
 # Default: "ghost"
 prompt_style = "ghost"
+
+# Use AI-generated prompts based on your journal history
+# Requires ANTHROPIC_API_KEY environment variable
+# Run "river --generate-prompts" to create personalized prompts
+# Default: true
+use_ai_prompts = true
