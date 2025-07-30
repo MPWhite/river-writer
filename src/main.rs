@@ -17,7 +17,7 @@ use std::io::{self, Write};
 use std::time::{Duration, Instant};
 use std::path::{Path, PathBuf}; // Path manipulation types
 use std::fs; // File system operations
-use chrono::Local; // External crate for date/time handling
+use chrono::{Local, Datelike}; // External crate for date/time handling
 use serde::{Deserialize, Serialize}; // Serialization traits
 
 // Module declaration - tells Rust to look for config.rs or config/mod.rs
@@ -100,6 +100,10 @@ struct Editor {
     // Duration represents a span of time
     accumulated_typing_time: Duration,
     last_typing_activity: Instant,
+    
+    // Prompt-related fields
+    current_prompt: Option<String>,
+    should_show_prompt: bool,
 }
 
 // Implementation block for Editor methods
@@ -146,6 +150,8 @@ impl Editor {
             typing_session_start: None,
             accumulated_typing_time: accumulated_time,
             last_typing_activity: Instant::now(),
+            current_prompt: None,
+            should_show_prompt: false,
         })
     }
 
@@ -446,12 +452,27 @@ impl Editor {
     }
 
     fn execute_command(&mut self) -> io::Result<bool> {
+        let cmd = self.command_buffer.trim();
+        
         if self.config.vim_bindings {
-            match self.command_buffer.as_str() {
+            match cmd {
                 "q" => return Ok(true),
+                "prompt" => {
+                    // Show today's prompt in the command area
+                    self.command_buffer = format!("Today's prompt: {}", self.get_daily_prompt());
+                    self.dirty = true;
+                    // Don't exit command mode so user can see the prompt
+                    return Ok(false);
+                }
                 _ => {}
             }
+        } else if cmd == "prompt" {
+            // Also support :prompt in non-vim mode
+            self.command_buffer = format!("Today's prompt: {}", self.get_daily_prompt());
+            self.dirty = true;
+            return Ok(false);
         }
+        
         Ok(false)
     }
 
@@ -696,6 +717,11 @@ impl Editor {
         // Track typing activity
         self.track_typing();
         
+        // Hide prompt on first keystroke
+        if self.should_show_prompt {
+            self.should_show_prompt = false;
+        }
+        
         // &mut creates a mutable reference - can modify the line
         let line = &mut self.buffer[self.cursor_y];
         line.insert(self.cursor_x, c);
@@ -740,6 +766,11 @@ impl Editor {
 
     fn insert_newline(&mut self) {
         self.track_typing(); // Track typing activity
+        
+        // Hide prompt on any editing action
+        if self.should_show_prompt {
+            self.should_show_prompt = false;
+        }
         
         let current_line = &mut self.buffer[self.cursor_y];
         let new_line: Vec<char> = current_line.drain(self.cursor_x..).collect();
@@ -818,6 +849,56 @@ impl Editor {
         }
         
         word_count
+    }
+    
+    fn get_daily_prompt(&self) -> String {
+        // Simple array of prompts for now
+        let prompts = vec![
+            "What moment from today do you want to remember?",
+            "What are you grateful for today?",
+            "What challenged you today and how did you handle it?",
+            "What made you smile or laugh today?",
+            "What did you learn about yourself today?",
+            "What small victory did you achieve today?",
+            "How did you grow as a person today?",
+            "What would you tell your future self about today?",
+            "What surprised you today?",
+            "What intention do you want to set for tomorrow?",
+        ];
+        
+        // Use the current date as a seed for consistent daily prompts
+        let today = Local::now();
+        let day_of_year = today.ordinal() as usize;
+        let prompt_index = day_of_year % prompts.len();
+        
+        prompts[prompt_index].to_string()
+    }
+    
+    fn should_display_prompt(&self) -> bool {
+        // Only show prompt if:
+        // 1. Prompts are enabled in config
+        // 2. Prompt style is "ghost"
+        // 3. Buffer is empty (just the header line or completely empty)
+        // 4. We haven't started typing yet
+        
+        if !self.config.show_prompts || self.config.prompt_style != "ghost" {
+            return false;
+        }
+        
+        // Check if buffer is essentially empty
+        if self.buffer.len() == 1 && self.buffer[0].is_empty() {
+            return true;
+        }
+        
+        // Check if we only have the header line and an empty line
+        if self.buffer.len() == 2 && self.buffer[1].is_empty() {
+            // Check if first line looks like a header (starts with #)
+            if !self.buffer[0].is_empty() && self.buffer[0][0] == '#' {
+                return true;
+            }
+        }
+        
+        false
     }
     
     fn get_stats_file_path(config: &Config) -> PathBuf {
@@ -925,6 +1006,14 @@ impl Editor {
                     // .collect() builds String from iterator
                     let line_str: String = line[visible_start..visible_end].iter().collect();
                     execute!(stdout, Print(&line_str))?;
+                } else if self.should_show_prompt && file_y == self.cursor_y && self.cursor_x == 0 {
+                    // Show the prompt as ghost text when cursor is at start of empty line
+                    if let Some(ref prompt) = self.current_prompt {
+                        execute!(stdout, SetForegroundColor(Color::DarkGrey))?;
+                        execute!(stdout, Print("> "))?;
+                        execute!(stdout, Print(prompt))?;
+                        execute!(stdout, ResetColor)?;
+                    }
                 }
             } else {
                 execute!(stdout, SetForegroundColor(Color::DarkGrey))?;
@@ -1015,6 +1104,7 @@ impl Editor {
             execute!(
                 stdout,
                 MoveTo(0, y + 1),
+                Print(":"),
                 Print(&self.command_buffer)
             )?;
         }
@@ -1064,6 +1154,12 @@ impl Editor {
             self.buffer.push(Vec::new());
             self.cursor_y += 1;
             self.cursor_x = 0;
+        }
+        
+        // Check if we should show a prompt
+        if self.should_display_prompt() {
+            self.current_prompt = Some(self.get_daily_prompt());
+            self.should_show_prompt = true;
         }
         
         self.dirty = true;

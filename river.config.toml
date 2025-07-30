@@ -15,3 +15,14 @@ daily_notes_dir = "~/river/notes"
 # Typing timeout in seconds (how long before typing session ends)
 # Default: 180 (3 minutes)
 typing_timeout_seconds = 180
+
+# Enable writing prompts (true/false)
+# Default: true
+show_prompts = true
+
+# Prompt display style: "ghost", "none", or "command_only"
+# - ghost: Shows prompt as gray text that disappears on first keystroke
+# - none: No prompts displayed
+# - command_only: Only accessible via :prompt command
+# Default: "ghost"
+prompt_style = "ghost"

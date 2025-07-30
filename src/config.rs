@@ -26,6 +26,12 @@ pub struct Config {
     
     #[serde(default = "default_typing_timeout_seconds")]
     pub typing_timeout_seconds: u64, // 64-bit unsigned integer
+    
+    #[serde(default = "default_show_prompts")]
+    pub show_prompts: bool,
+    
+    #[serde(default = "default_prompt_style")]
+    pub prompt_style: String, // "ghost" or "none" or "command_only"
 }
 
 // These functions provide default values for config fields
@@ -56,6 +62,14 @@ fn default_typing_timeout_seconds() -> u64 {
     180 // 3 minutes - integer literal
 }
 
+fn default_show_prompts() -> bool {
+    true
+}
+
+fn default_prompt_style() -> String {
+    "ghost".to_string()
+}
+
 // Implementing the Default trait allows Config::default() to be called
 // This is useful for creating instances with sensible defaults
 impl Default for Config {
@@ -66,6 +80,8 @@ impl Default for Config {
             tab_size: default_tab_size(),
             daily_notes_dir: default_daily_notes_dir(),
             typing_timeout_seconds: default_typing_timeout_seconds(),
+            show_prompts: default_show_prompts(),
+            prompt_style: default_prompt_style(),
         }
     }
 }
